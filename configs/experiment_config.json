@@ -1,0 +1,137 @@
+{
+  "_comment": "Central configuration for the synthetic guardrail outlier-handling demo. All randomness derives from master_seed. Every generative parameter, method, and scoring weight lives here so the whole study is reproducible and auditable. Synthetic data only, no real user data.",
+  "master_seed": 20260703,
+
+  "simulation": {
+    "n_experiments_per_metric": 150,
+    "n_users_long_per_arm": 4000,
+    "n_users_early_per_arm": 1000,
+    "_effect_comment": "Per-experiment ground-truth relative treatment effect on the CLEAN metric mean (the real quantity of interest, defined before contamination). A fraction are true nulls (A/A-like). The rest are drawn from a normal centered slightly positive with both regressions and wins, then clipped.",
+    "frac_null_experiments": 0.35,
+    "true_effect_mean": 0.02,
+    "true_effect_sd": 0.035,
+    "true_effect_clip_low": -0.06,
+    "true_effect_clip_high": 0.10,
+    "decision_deadzone": 0.005
+  },
+
+  "metrics": {
+    "revenue_per_user": {
+      "label": "Revenue per user (USD/day)",
+      "family": "heavy_tailed_continuous",
+      "outlier_story": "The tail holds BOTH genuine signal (real high spenders, whom the treatment actually moves by converting more users into big spenders) AND contamination (physically impossible values from a logging bug, far above any real user). Because the effect lives in the tail, clipping too hard shaves genuine spenders and biases the effect. Light one-sided winsorization at the 99th percentile removes only the extreme contamination while keeping the genuine spenders, so it best preserves how the early reading tracks the eventual estimate (the highest predictiveness) without over-clipping, and it is the method selected here. It is also the least-biased handling with correct coverage of the true effect, which the ground-truth validation confirms after the fact. Aggressive clipping (for example the 80th or 90th percentile, or a 3 SD cap) has lower variance but collapses the between-experiment signal, so its predictiveness R squared falls even though its readings look stable, and it is not selected. Business-rule removal of the impossible values (drop_impossible) is a clean, low-bias alternative.",
+      "base": {
+        "dist": "whale_frequency",
+        "scale": 1.0,
+        "small_meanlog": 1.6, "small_sdlog": 0.5,
+        "whale_meanlog": 3.7, "whale_sdlog": 0.45,
+        "p_whale_control": 0.06
+      },
+      "effect_mode": "whale_frequency",
+      "contamination": {"kind": "impossible_spike", "rate": 0.003, "low": 2000.0, "high": 20000.0},
+      "business_cap": 500.0,
+      "business_cap_rationale": "No real user generates more than 500 USD/day of revenue on this surface. Values above are logging or currency-conversion errors. Removing them (dropping the impossible rows) keeps every genuine spender and deletes only contamination. Note that CAPPING (clipping) impossible values to 500 still leaves a large residual mass and underperforms removal.",
+      "expected_winner": "winsor_99_upper"
+    },
+
+    "engagement_events_per_user": {
+      "label": "Engagement events per user (count/day)",
+      "family": "heavy_tailed_count",
+      "outlier_story": "The tail is contamination (bots and scrapers) that is NOT caused by the treatment and carries no product signal. The real treatment effect is a modest multiplicative lift spread across the human population, including legitimate power users. There is no natural business ceiling for a count, so a fixed business rule either clips real power users or misses low-end bots. An adaptive distribution-based method that clips or removes the extreme tail (an aggressive winsorization or an equivalent upper trim) removes the bot influence while keeping the human signal. Expected winner: aggressive winsorization or upper trimming.",
+      "base": {
+        "dist": "gamma_poisson",
+        "human_shape": 1.5, "human_scale": 10.0,
+        "power_user_frac": 0.03, "power_shape": 4.0, "power_scale": 50.0
+      },
+      "effect_mode": "multiplicative",
+      "contamination": {"kind": "bot_flood", "rate": 0.008, "low": 3000.0, "high": 30000.0},
+      "business_cap": 300.0,
+      "business_cap_rationale": "A crude fixed rule sometimes proposed by stakeholders. Counts have no true physical ceiling, so 300 is a compromise that clips genuine power users while still leaving room. Included to show that a rigid business rule underperforms an adaptive distribution rule for this metric.",
+      "expected_winner": "winsor_95_2s"
+    },
+
+    "conversion_rate_per_user": {
+      "label": "Conversion rate per user (bounded 0..1)",
+      "family": "bounded_rate",
+      "outlier_story": "A bounded ratio metric measured over many visits per user, so per-user rates are tight and there is essentially no contamination and no heavy tail. Any handling either does nothing or slightly biases the estimate by clipping legitimate values, with no variance benefit to offset it. No handling is expected to win. This metric shows that a blanket outlier policy wastes effort and signal.",
+      "base": {
+        "dist": "beta_binomial",
+        "visits_min": 25, "visits_extra_poisson": 100.0,
+        "p_alpha": 2.0, "p_beta": 8.0
+      },
+      "effect_mode": "multiplicative_prob",
+      "contamination": {"kind": "none", "rate": 0.0},
+      "business_cap": 1.0,
+      "business_cap_rationale": "A conversion rate cannot exceed 1.0 by definition, so any business ceiling is a no-op. Included to make explicit that no business rule helps this metric.",
+      "expected_winner": "none"
+    }
+  },
+
+  "_methods_comment": "The menu spans five families and, where a method has a parameter, a range of reasonable settings so the framework can trace the accuracy-variance tradeoff across the whole sweep rather than at one arbitrary point. Percentile methods sweep 80/90/95/98/99/99.9, moment capping sweeps 3/4/6/9 SD. Lower percentile or lower SD means more aggressive handling.",
+  "methods": [
+    {"name": "none", "kind": "identity", "family": "no_handling",
+     "desc": "No outlier handling. Raw values as logged."},
+    {"name": "drop_impossible", "kind": "drop_const", "family": "removal_business",
+     "desc": "Business-rule removal: drop values above the business-defined maximum plausible value (impossible values are logging errors and are removed rather than clipped)."},
+    {"name": "cap_business", "kind": "cap_const", "family": "capping_business",
+     "desc": "Business-rule capping: clip values above the per-metric business ceiling to that ceiling."},
+    {"name": "cap_dist_9sd", "kind": "cap_moment", "family": "capping_distribution", "k_sd": 9.0,
+     "desc": "Distribution capping at pooled mean plus 9 standard deviations (very light)."},
+    {"name": "cap_dist_6sd", "kind": "cap_moment", "family": "capping_distribution", "k_sd": 6.0,
+     "desc": "Distribution capping at pooled mean plus 6 standard deviations."},
+    {"name": "cap_dist_4sd", "kind": "cap_moment", "family": "capping_distribution", "k_sd": 4.0,
+     "desc": "Distribution capping at pooled mean plus 4 standard deviations."},
+    {"name": "cap_dist_3sd", "kind": "cap_moment", "family": "capping_distribution", "k_sd": 3.0,
+     "desc": "Distribution capping at pooled mean plus 3 standard deviations (aggressive)."},
+    {"name": "winsor_999_upper", "kind": "winsor", "family": "winsorization", "upper_q": 0.999,
+     "desc": "Very light one-sided upper winsorization at the pooled 99.9th percentile."},
+    {"name": "winsor_99_upper", "kind": "winsor", "family": "winsorization", "upper_q": 0.99,
+     "desc": "One-sided upper winsorization at the pooled 99th percentile."},
+    {"name": "winsor_98_upper", "kind": "winsor", "family": "winsorization", "upper_q": 0.98,
+     "desc": "One-sided upper winsorization at the pooled 98th percentile."},
+    {"name": "winsor_95_upper", "kind": "winsor", "family": "winsorization", "upper_q": 0.95,
+     "desc": "One-sided upper winsorization at the pooled 95th percentile."},
+    {"name": "winsor_90_upper", "kind": "winsor", "family": "winsorization", "upper_q": 0.90,
+     "desc": "One-sided upper winsorization at the pooled 90th percentile."},
+    {"name": "winsor_80_upper", "kind": "winsor", "family": "winsorization", "upper_q": 0.80,
+     "desc": "One-sided upper winsorization at the pooled 80th percentile (aggressive)."},
+    {"name": "winsor_99_2s", "kind": "winsor", "family": "winsorization", "lower_q": 0.01, "upper_q": 0.99,
+     "desc": "Two-sided winsorization at the 1st and 99th pooled percentiles."},
+    {"name": "winsor_95_2s", "kind": "winsor", "family": "winsorization", "lower_q": 0.05, "upper_q": 0.95,
+     "desc": "Two-sided winsorization at the 5th and 95th pooled percentiles."},
+    {"name": "winsor_90_2s", "kind": "winsor", "family": "winsorization", "lower_q": 0.10, "upper_q": 0.90,
+     "desc": "Two-sided winsorization at the 10th and 90th pooled percentiles (aggressive)."},
+    {"name": "trim_999_upper", "kind": "trim", "family": "removal_distribution", "upper_q": 0.999,
+     "desc": "Remove observations above the pooled 99.9th percentile (very light)."},
+    {"name": "trim_99_upper", "kind": "trim", "family": "removal_distribution", "upper_q": 0.99,
+     "desc": "Remove observations above the pooled 99th percentile."},
+    {"name": "trim_98_upper", "kind": "trim", "family": "removal_distribution", "upper_q": 0.98,
+     "desc": "Remove observations above the pooled 98th percentile."},
+    {"name": "trim_95_upper", "kind": "trim", "family": "removal_distribution", "upper_q": 0.95,
+     "desc": "Remove observations above the pooled 95th percentile."},
+    {"name": "trim_90_upper", "kind": "trim", "family": "removal_distribution", "upper_q": 0.90,
+     "desc": "Remove observations above the pooled 90th percentile."},
+    {"name": "trim_80_upper", "kind": "trim", "family": "removal_distribution", "upper_q": 0.80,
+     "desc": "Remove observations above the pooled 80th percentile (aggressive)."},
+    {"name": "trim_99_2s", "kind": "trim", "family": "removal_distribution", "lower_q": 0.01, "upper_q": 0.99,
+     "desc": "Remove observations below the 1st and above the 99th pooled percentile."},
+    {"name": "trim_95_2s", "kind": "trim", "family": "removal_distribution", "lower_q": 0.05, "upper_q": 0.95,
+     "desc": "Remove observations below the 5th and above the 95th pooled percentile."},
+    {"name": "trim_90_2s", "kind": "trim", "family": "removal_distribution", "lower_q": 0.10, "upper_q": 0.90,
+     "desc": "Remove observations below the 10th and above the 90th pooled percentile (aggressive)."}
+  ],
+
+  "scoring": {
+    "_comment": "Selection uses only production-measurable signals, so it can be reproduced on live experiments where the true effect is never known. The reference is the long-term (eventual) reading, learned across many long-running experiments. STAGE 1 is a CALIBRATION GATE: a method may only win if its early 95 percent CI covers the eventual long-term estimate at least calibration_gate of the time. A method whose early interval systematically misses where the experiment lands is over-confident (usually from over-aggressive trimming) and is disqualified. STAGE 2 scores the eligible methods by PREDICTIVENESS, measured as the early-to-long R squared (how much of the long-term reading's variation across experiments the early reading explains), ratio-normalized to the best ELIGIBLE method within the metric so the best scores 1.0. R squared is used rather than the early-to-long RMSE because RMSE is gamed by aggressive shrinkage: a method that clips almost everything drives both readings toward the same constant, making RMSE tiny while destroying real tracking, whereas R squared collapses under that over-clipping. Because each RMSE is estimated from a finite number of experiments (the Monte Carlo standard error of an RMSE from 150 experiments is roughly 1/sqrt(2*150) = 5.8 percent), differences within tiebreak_epsilon of the best score are treated as statistically indistinguishable and the simplest method (per simplicity_order) is preferred for robustness and maintainability. Ground-truth recovery (RMSE, bias, coverage against the known true effect) is never used to select; it is reported only to validate, after the fact, that the method chosen on production-measurable signals actually recovers the true effect.",
+    "calibration_gate": 0.90,
+    "tiebreak_epsilon": 0.06,
+    "simplicity_order": ["none", "drop_impossible", "cap_business", "cap_dist_9sd", "cap_dist_6sd", "cap_dist_4sd", "cap_dist_3sd", "winsor_999_upper", "winsor_99_upper", "winsor_98_upper", "winsor_95_upper", "winsor_90_upper", "winsor_80_upper", "winsor_99_2s", "winsor_95_2s", "winsor_90_2s", "trim_999_upper", "trim_99_upper", "trim_98_upper", "trim_95_upper", "trim_90_upper", "trim_80_upper", "trim_99_2s", "trim_95_2s", "trim_90_2s"]
+  },
+
+  "business_impact": {
+    "_comment": "Illustrative only. Translates decision-quality improvement into an annualized figure using explicit, stated assumptions. Not a real financial result. The figure is linear in revenue_at_stake_per_experiment_usd, so treat it as an order-of-magnitude sensitivity, not a point estimate.",
+    "revenue_at_stake_per_experiment_usd": 10000000,
+    "experiments_per_year": 500,
+    "note": "Each experiment gates a launch decision affecting revenue_at_stake_per_experiment_usd over one year. A wrong decision (a missed win or a shipped regression) of relative size r misprices that revenue by r. Annual regret for a method = (mean per-experiment regret magnitude) * experiments_per_year * revenue_at_stake_per_experiment_usd. The illustrative avoided loss is the annual regret of no-handling minus that of the selected per-metric winner."
+  }
+}

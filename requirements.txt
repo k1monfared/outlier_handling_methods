@@ -1,0 +1,8 @@
+# Pinned to the versions this demo was built and run against (Python 3.12).
+# FOSS only. A clean virtual environment is recommended:
+#   python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt
+numpy==2.0.2
+scipy==1.18.0
+pandas==3.0.3
+matplotlib==3.11.0
+pyarrow==24.0.0
